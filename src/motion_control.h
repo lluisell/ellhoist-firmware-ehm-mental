@@ -3,13 +3,11 @@
 
 #include <Arduino.h>
 
-// --- MCP23008 BITMASKS ---
-#define MASK_FW_CONT  0b00000001 // GP0
-#define MASK_REV_CONT 0b00000010 // GP1
-#define MASK_BRAKE_1  0b00000100 // GP2
-#define MASK_BRAKE_2  0b00001000 // GP3
+#define MASK_FW_CONT  0b00000001
+#define MASK_REV_CONT 0b00000010
+#define MASK_BRAKE_1  0b00000100
+#define MASK_BRAKE_2  0b00001000
 
-// --- ENUMS ---
 enum MotionDirection {
     MOTION_STOP = 0,
     MOTION_FORWARD,
@@ -18,17 +16,30 @@ enum MotionDirection {
 
 enum BrakeTestMode {
     BRAKE_TEST_NONE = 0,
-    BRAKE_TEST_BR1, // Releases BR2 permanently during stops
-    BRAKE_TEST_BR2  // Releases BR1 permanently during stops
+    BRAKE_TEST_BR1,
+    BRAKE_TEST_BR2
 };
 
-// --- FUNCTION PROTOTYPES ---
+enum OperationControlMode {
+    CTRL_MODE_LOW_VOLTAGE = 0,
+    CTRL_MODE_DIRECT
+};
+
+extern OperationControlMode currentCtrlMode;
+
 void setBrakeTestMode(BrakeTestMode newMode);
 BrakeTestMode getBrakeTestMode();
 
-void setMotionState(MotionDirection dir);
+bool setMotionState(MotionDirection dir);
 MotionDirection getMotionState();
 
+void setOperationControlMode(OperationControlMode mode);
 void updateMotionOutputs();
+
+// --- NEW MOTION LOGIC & LIMIT FUNCTIONS ---
+bool runToTargetPosition(int32_t target);
+void processMotionLogic();
+int32_t getTargetPosition();
+bool isTargetActive();
 
 #endif // MOTION_CONTROL_H

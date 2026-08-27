@@ -2,39 +2,50 @@
 #include "motion_control.h"
 #include "web_server.h"
 #include "power_measurement.h"
+#include "sensors.h"
 
-// --- GLOBAL HARDWARE INSTANCES & VARIABLES ---
 RTC_DS3231 rtc;
-Adafruit_BME280 bme;
+HardwareSerial RS485_Port0(0);
+HardwareSerial RS485_Port1(1);
 
-volatile long encoderPosition = 0;
-volatile unsigned long encoderTotalPulses = 0;
-volatile int lastDirection = 0;
 bool mcpPresent = false;
 bool mcpOutputsState = false;
 
-// Dynamic logging helper to route output to Serial & Web Console Buffer
 void logDiag(const String& msg) {
     Serial.print(msg);
     appendDiagLog(msg);
 }
 
-// --- QUADRATURE ENCODER INTERRUPT SERVICE ROUTINE ---
-void IRAM_ATTR handleEncoderISR() {
-    bool stateA = digitalRead(PIN_ENC_A);
-    bool stateB = digitalRead(PIN_ENC_B);
-    
-    if (stateA == stateB) {
-        encoderPosition++;
-        lastDirection = 1;   // Clockwise
-    } else {
-        encoderPosition--;
-        lastDirection = -1;  // Counter-Clockwise
+void playStartupMelody() {
+    int melody[] = { 523, 659, 784, 1047 };
+    int durations[] = { 100, 100, 100, 250 };
+    for (int i = 0; i < 4; i++) {
+        tone(PIN_BUZZER, melody[i], durations[i]);
+        delay((int)(durations[i] * 1.25));
+        noTone(PIN_BUZZER);
     }
-    encoderTotalPulses++;
 }
 
-// --- DYNAMIC I2C BUS SWAPPING HELPERS ---
+void playLoudAlert() {
+    Serial.print("\r\n[BUZZER] Playing 4.0 kHz Resonant Alert...\r\n");
+    for (int i = 0; i < 3; i++) {
+        tone(PIN_BUZZER, 4000, 100);
+        delay(150);
+        noTone(PIN_BUZZER);
+    }
+}
+
+void playMelody() {
+    Serial.print("\r\n[BUZZER] Playing Melody...\r\n");
+    int melody[] = { 262, 330, 392, 523, 392, 784 }; 
+    int durations[] = { 150, 150, 150, 200, 150, 400 }; 
+    for (int i = 0; i < 6; i++) {
+        tone(PIN_BUZZER, melody[i], durations[i]);
+        delay(durations[i] * 1.30);
+        noTone(PIN_BUZZER);
+    }
+}
+
 void setI2CNormal() {
     Wire.end();
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 100000); 
@@ -42,10 +53,9 @@ void setI2CNormal() {
 
 void setI2CSwapped() {
     Wire.end();
-    Wire.begin(PIN_I2C_SCL, PIN_I2C_SDA, 100000); // Swapped for MCP23008 trace fix
+    Wire.begin(PIN_I2C_SCL, PIN_I2C_SDA, 100000);
 }
 
-// --- MCP23008 FUNCTIONS ---
 bool checkMCPPresence() {
     setI2CSwapped();
     Wire.beginTransmission(ADDR_MCP23008);
@@ -80,9 +90,9 @@ uint8_t readMCP(uint8_t reg) {
 }
 
 void initMCP23008() {
-    writeMCP(0x00, 0xF0); // GP0-3 (Out), GP4-7 (In)
-    writeMCP(0x06, 0xF0); // Enable pull-ups on GP4-7
-    writeMCP(0x09, 0x00); // All outputs LOW
+    writeMCP(0x00, 0xF0);
+    writeMCP(0x06, 0xF0);
+    writeMCP(0x09, 0x00);
 }
 
 void sequenceMCPOutputsOnStartup() {
@@ -131,31 +141,14 @@ void sequenceMCPOutputsOnStartup() {
     logDiag("=========================================\r\n\r\n");
 }
 
-// --- SENSOR AUXILIARY READERS ---
-static void readAccelerometer(int16_t &x, int16_t &y, int16_t &z) {
-    Wire.beginTransmission(ADDR_LIS2DH12);
-    Wire.write(0x28 | 0x80);
-    if (Wire.endTransmission(false) != 0) {
-        Wire.endTransmission(true);
-        return;
-    }
-    if (Wire.requestFrom((uint8_t)ADDR_LIS2DH12, (uint8_t)6) == 6) {
-        x = Wire.read() | (Wire.read() << 8);
-        y = Wire.read() | (Wire.read() << 8);
-        z = Wire.read() | (Wire.read() << 8);
-    }
-}
-
-// --- SERIAL INPUT HELPER ---
 static String readSerialLine() {
-    while (Serial.available()) Serial.read(); // Clear remaining characters
+    while (Serial.available()) Serial.read();
     while (!Serial.available()) delay(10);
     String line = Serial.readStringUntil('\n');
     line.trim();
     return line;
 }
 
-// --- TEST ROUTINES ---
 void liveAnalogMonitor() {
     Serial.print("\r\n--- LIVE ANALOG MONITOR ---\r\nSend 'q' to stop.\r\n");
     delay(1000);
@@ -174,9 +167,7 @@ void liveAnalogMonitor() {
 
 void testEncoder() {
     Serial.print("\r\n--- ENCODER & OPTOPAIR RAW PIN DEBUGGER ---\r\n");
-    Serial.print("Manually turn encoder or trigger input lines.\r\n");
-    Serial.print("Press 'p' to toggle internal PULLUP / PULLDOWN mode.\r\n");
-    Serial.print("Send 'q' to exit.\r\n\r\n");
+    Serial.print("Press 'p' to toggle internal PULLUP / PULLDOWN mode. 'q' to exit.\r\n\r\n");
     delay(1000);
     while(Serial.available()) Serial.read();
 
@@ -198,8 +189,8 @@ void testEncoder() {
         int rawA = digitalRead(PIN_ENC_A);
         int rawB = digitalRead(PIN_ENC_B);
 
-        Serial.printf("GPIO20 (ENC_A): %d | GPIO21 (ENC_B): %d | INTERRUPT_COUNT: %6lu | POS: %6ld\r\n", 
-                      rawA, rawB, encoderTotalPulses, encoderPosition);
+        /*Serial.printf("GPIO20 (ENC_A): %d | GPIO21 (ENC_B): %d | INTERRUPT_COUNT: %6lu | POS: %6ld\r\n", 
+                      rawA, rawB, encoderTotalPulses, encoderPosition);*/
         
         delay(100);
     }
@@ -254,10 +245,6 @@ void toggleMCPOutputs() {
     Serial.printf("BRAKE_2 (GP3): %s\r\n", mcpOutputsState ? "ON" : "OFF");
 }
 
-// Instantiate explicit HP UARTs (0 and 1) to bypass LP UART pin restrictions
-HardwareSerial RS485_Port0(0);
-HardwareSerial RS485_Port1(1);
-
 void testRS485() {
     Serial.print("\r\n--- RS485 LOOPBACK TEST ---\r\n");
     digitalWrite(PIN_U0_MOD, HIGH); digitalWrite(PIN_U1_MOD, LOW);
@@ -287,26 +274,6 @@ void testRS485() {
     digitalWrite(PIN_U0_MOD, LOW); digitalWrite(PIN_U1_MOD, LOW);
 }
 
-void playLoudAlert() {
-    Serial.print("\r\n[BUZZER] Playing 4.0 kHz Resonant Alert...\r\n");
-    for (int i = 0; i < 3; i++) {
-        tone(PIN_BUZZER, 4000, 100);
-        delay(150);
-        noTone(PIN_BUZZER);
-    }
-}
-
-void playMelody() {
-    Serial.print("\r\n[BUZZER] Playing Melody...\r\n");
-    int melody[] = { 262, 330, 392, 523, 392, 784 }; 
-    int durations[] = { 150, 150, 150, 200, 150, 400 }; 
-    for (int i = 0; i < 6; i++) {
-        tone(PIN_BUZZER, melody[i], durations[i]);
-        delay(durations[i] * 1.30);
-        noTone(PIN_BUZZER);
-    }
-}
-
 void testSDCard() {
     Serial.print("\r\n--- SD CARD DIAGNOSTICS ---\r\n");
     SPI.begin(PIN_SD_SCK, PIN_SD_MISO, PIN_SD_MOSI, PIN_SD_CS);
@@ -329,22 +296,19 @@ void liveI2CDashboard() {
         if (Serial.available() > 0 && Serial.read() == 'q') break;
 
         DateTime now = rtc.now();
-        float temp = bme.readTemperature();
-        float hum = bme.readHumidity();
-        float pres = bme.readPressure() / 100.0F;
+        float temp = 0, hum = 0, pres = 0;
+        readWeatherSensor(temp, hum, pres);
 
         int16_t ax = 0, ay = 0, az = 0;
         readAccelerometer(ax, ay, az);
 
         updateAllPowerMeasurements();
 
-        bool btnUp = false, btnDn = false, sigFw = false, sigRv = false;
+        bool btnUp = false, btnDn = false;
         if (mcpPresent) {
             uint8_t mcpInputs = readMCP(0x09);
             btnUp = !(mcpInputs & 0b00010000);
             btnDn = !(mcpInputs & 0b00100000);
-            sigFw = !(mcpInputs & 0b01000000);
-            sigRv = !(mcpInputs & 0b10000000);
         }
 
         Serial.print("--------------------------------------------------\r\n");
@@ -353,11 +317,11 @@ void liveI2CDashboard() {
         Serial.printf("[ENV]   Temp: %.2f C  | Hum: %.2f %% | Pres: %.1f hPa\r\n", temp, hum, pres);
         Serial.printf("[ACCEL] X: %6d     | Y: %6d     | Z: %6d\r\n", ax, ay, az);
         Serial.printf("[AC]    V_L1L2: %.1f V | V_L3L2: %.1f V | Freq: %.1f Hz\r\n", vL1L2_RMS, vL3L2_RMS, phaseFrequencyHz);
-        Serial.printf("[MOT]   I_U: %.2f A   | I_V: %.2f A   | I_W: %.2f A\r\n", motorCurrentU, motorCurrentV, motorCurrentW);
+        Serial.printf("[MOT]   I_U: %.2f A   | I_V: %.2f A   | I_W: %.2f A | Pwr: %.1f W\r\n", motorCurrentU, motorCurrentV, motorCurrentW, motorPower);
         Serial.printf("[INA]   Loop Voltage: %.2f V | Current: %.2f mA\r\n", inaBusVoltage, inaCurrent);
         
         if (mcpPresent) {
-            Serial.printf("[MCP]   Inputs  -> UP:%d | DN:%d | FW:%d | RV:%d\r\n", btnUp, btnDn, sigFw, sigRv);
+            Serial.printf("[MCP]   Inputs  -> UP:%d | DN:%d\r\n", btnUp, btnDn);
         } else {
             Serial.print("[MCP]   OFFLINE / NOT DETECTED\r\n");
         }

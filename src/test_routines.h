@@ -7,17 +7,12 @@
 #include <SD.h>
 #include <WiFi.h>
 #include <RTClib.h>
-#include <Adafruit_Sensor.h>
-#include <Adafruit_BME280.h>
 
 // --- HARDWARE PIN DEFINITIONS ---
 #define PIN_AN_L1_L2_A   0
 #define PIN_AN_L1_L2_B   1
 #define PIN_U0_RX        2
 #define PIN_U0_MOD       3
-#define PIN_AN_MOTOR_V   4
-#define PIN_AN_MOTOR_U   5
-#define PIN_AN_MOTOR_W   6
 #define PIN_SD_MOSI      7
 #define PIN_SD_CS        8
 #define PIN_BTN_SELECT   9
@@ -43,18 +38,14 @@
 #define ADDR_EERAM_DATA  0x50 
 #define ADDR_EERAM_CTRL  0x18 
 
-// --- EXPORTED HARDWARE OBJECTS & VARIABLES ---
+// --- EXPORTED HARDWARE OBJECTS ---
 extern RTC_DS3231 rtc;
-extern Adafruit_BME280 bme;
+extern HardwareSerial RS485_Port0;
+extern HardwareSerial RS485_Port1;
 extern bool mcpPresent;
 extern bool mcpOutputsState;
 
-// --- EXPORT HARDWARE SERIAL INSTANCES ---
-extern HardwareSerial RS485_Port0;
-extern HardwareSerial RS485_Port1;
-
 // --- ISR & BUS HELPERS ---
-void IRAM_ATTR handleEncoderISR();
 void setI2CNormal();
 void setI2CSwapped();
 
@@ -65,8 +56,11 @@ uint8_t readMCP(uint8_t reg);
 void initMCP23008();
 void sequenceMCPOutputsOnStartup();
 
-// --- LOGGING HELPER ---
+// --- LOGGING & AUDIO HELPERS ---
 void logDiag(const String& msg);
+void playStartupMelody();
+void playLoudAlert();
+void playMelody();
 
 // --- TEST ROUTINES ---
 void liveAnalogMonitor();
@@ -74,8 +68,6 @@ void testEncoder();
 void scanI2C();
 void toggleMCPOutputs();
 void testRS485();
-void playLoudAlert();
-void playMelody();
 void testSDCard();
 void liveI2CDashboard();
 void enable47L16AutoStore();
