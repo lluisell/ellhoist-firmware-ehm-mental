@@ -10,6 +10,8 @@
 #include "sd_logger.h"
 #include "web_server.h"
 #include "test_routines.h"
+#include "bluetooth.h"
+#include "websocket.h"
 
 #define WDT_TIMEOUT_MSECONDS 500
 #define PIN_BTN_SELECT 9
@@ -180,13 +182,91 @@ void setup() {
         }
     }
 
-    initWebServer("ESP32C6-TestRig");
-    printMenu();
+    initWebSocket();
+    initBluetooth();
+
+    String fullBtName = "ELLHoist_" + String(sysStats.serialNumber) + "_AP";
+    initWebServer(fullBtName.c_str(),"3LLH01s7");
+
 
     initWatchdog();
     playStartupMelodyConfigured();
 }
 
+bool inTestMenuMode = false;
+void handleSerialAPI() {
+    if (Serial.available() > 0) {
+        // If actively using test routines CLI single-character mode
+        if (inTestMenuMode) {
+            char cmd = Serial.read();
+            if (cmd == 'x' || cmd == 'X') {
+                inTestMenuMode = false;
+                Serial.println("Exited Test Menu. Returning to Main API mode.");
+                return;
+            }
+            handleCLICommand(cmd);
+            return;
+        }
+
+        String input = Serial.readStringUntil('\n');
+        input.trim();
+        if (input.length() == 0) return;
+
+        if (input == "RST") {
+            Serial.println(">> REBOOTING DEVICE...");
+            Serial.flush(); 
+            delay(500);     
+            ESP.restart();  
+        } 
+        else if (input == "TEST" || input == "MENU") {
+            inTestMenuMode = true;
+            Serial.println("\r\n--- Entering Test Routines CLI Menu ---");
+            Serial.println("Press 'X' at any prompt to return to Main API mode.");
+            printMenu();
+            return;
+        }
+
+        if (input.startsWith("SET_SN=")) {
+            String sn = input.substring(7);
+            sn.toCharArray(sysStats.serialNumber, sizeof(sysStats.serialNumber));
+            snprintf(sysStats.serialNumber, sizeof(sysStats.serialNumber), "%s", sn.c_str());
+            saveStatsToEEPROM();
+            Serial.println("OK:SN_SET");
+        } 
+        else if (input.startsWith("SET_MIN=")) {
+            sysStats.deviceRuntimeSec = input.substring(8).toInt() * 60;
+            saveStatsToEEPROM();
+            Serial.println("OK:MIN_SET");
+        } 
+        else if (input.startsWith("SET_PWR=")) {
+            sysStats.br1Cycles = input.substring(8).toInt();
+            saveStatsToEEPROM();
+            Serial.println("OK:PWR_SET");
+        } 
+        else if (input.startsWith("SET_SSID=")) {
+            setSSID(input.substring(9));
+            Serial.println("OK:SSID_SET");
+        } 
+        else if (input.startsWith("SET_PASS=")) {
+            setPass(input.substring(9));
+            Serial.println("OK:PASS_SET");
+        } 
+        else if (input == "INFO") {
+            Serial.println("--- START_INFO ---");
+            Serial.println("Serial: " + String(sysStats.serialNumber));
+            Serial.println("HWID: " + hwID);
+            Serial.println("Version: " + FIRMWARE_VERSION); 
+            Serial.printf("Runtime (sec): %u\n", sysStats.deviceRuntimeSec);
+            Serial.printf("BR1 Cycles: %u\n", sysStats.br1Cycles);
+            Serial.printf("BR2 Cycles: %u\n", sysStats.br2Cycles);
+            String ssid = getSSID();
+            Serial.println("WiFi SSID: " + (ssid == "" || ssid == "null" ? "NOT SET" : ssid));
+            Serial.println("--- END_INFO ---");
+        }
+    }
+}
+
+long int lastMinuteMillis = 0;
 void loop() {
     esp_task_wdt_reset();
 
@@ -196,8 +276,18 @@ void loop() {
     
     processMotionLogic();
 
-    if (Serial.available() > 0) {
-        char cmd = Serial.read();
-        handleCLICommand(cmd);
+    handleSerialAPI();
+
+    handleWebSocket();
+    handleBluetooth();
+
+    // 1-minute interval update
+    if (millis() - lastMinuteMillis >= 15000) {
+        lastMinuteMillis = millis();
+
+        // Update value and send BLE notification
+        notifyMinutesUpdate();
+        //uploadWebsocketData();
     }
+    
 }

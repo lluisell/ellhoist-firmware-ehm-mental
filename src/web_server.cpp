@@ -8,15 +8,35 @@
 #include "melodies.h"
 #include <WiFi.h>
 #include <WebServer.h>
-#include <Preferences.h>
+#include <DNSServer.h>
 #include <SD.h>
 #include <Update.h>
 #include <time.h>
 #include <esp_task_wdt.h> // Add at top of web_server.cpp if not present
 
 static WebServer server(80);
-static Preferences prefs;
+static DNSServer dnsServer;
 static String diagLogBuffer = "";
+static const byte DNS_PORT = 53;
+
+
+
+
+bool connectToSavedWiFi() {
+    String ssid = getSSID();
+    String pass = getPass();
+
+    if (ssid.length() == 0) return false;
+
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    int timeout = 20;
+    while (WiFi.status() != WL_CONNECTED && timeout > 0) {
+        esp_task_wdt_reset();
+        delay(500);
+        timeout--;
+    }
+    return (WiFi.status() == WL_CONNECTED);
+}
 
 void appendDiagLog(const String& logMsg) {
     diagLogBuffer += logMsg;
@@ -25,29 +45,6 @@ void appendDiagLog(const String& logMsg) {
     }
 }
 
-void saveWiFiCredentials(const String& ssid, const String& password) {
-    prefs.begin("wifi_config", false);
-    prefs.putString("ssid", ssid);
-    prefs.putString("pass", password);
-    prefs.end();
-}
-
-bool connectToSavedWiFi() {
-    prefs.begin("wifi_config", true);
-    String ssid = prefs.getString("ssid", "");
-    String pass = prefs.getString("pass", "");
-    prefs.end();
-
-    if (ssid.length() == 0) return false;
-
-    WiFi.begin(ssid.c_str(), pass.c_str());
-    int timeout = 20;
-    while (WiFi.status() != WL_CONNECTED && timeout > 0) {
-        delay(500);
-        timeout--;
-    }
-    return (WiFi.status() == WL_CONNECTED);
-}
 
 static String getSDFilesListHTML() {
     File root = SD.open("/");
@@ -542,11 +539,27 @@ static void handleDiagAPI() { server.send(200, "text/plain", diagLogBuffer); }
 void initWebServer(const char* apSSID, const char* apPassword) {
     diagLogBuffer.reserve(4096);
 
-    WiFi.mode(WIFI_AP_STA);
+    /*WiFi.mode(WIFI_AP_STA);
     if (apPassword != NULL) WiFi.softAP(apSSID, apPassword);
     else WiFi.softAP(apSSID);
 
-    connectToSavedWiFi();
+    connectToSavedWiFi();*/
+
+    WiFi.mode(WIFI_STA);
+    bool connected = connectToSavedWiFi();
+
+    if (!connected) {
+        // Enable Access Point mode
+        WiFi.mode(WIFI_AP_STA);
+        if (apPassword != NULL) WiFi.softAP(apSSID, apPassword);
+        else WiFi.softAP(apSSID);
+
+        // Redirect ALL DNS lookup requests to ESP32 softAP IP (Triggers OS captive portal check)
+        dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
+        appendDiagLog("[WIFI] STA connection failed. SoftAP Captive Portal started at " + WiFi.softAPIP().toString() + "\n");
+    } else {
+        appendDiagLog("[WIFI] Connected to local network. IP: " + WiFi.localIP().toString() + "\n");
+    }
 
     server.on("/", handleRoot);
     server.on("/api/telemetry", handleTelemetryAPI);
@@ -567,7 +580,29 @@ void initWebServer(const char* apSSID, const char* apPassword) {
 
     server.on("/update", HTTP_POST, handleUpdateResponse, handleUpdateUpload);
 
+    /*server.onNotFound([]() {
+        String targetUrl = "http://" + WiFi.softAPIP().toString() + "/";
+        server.sendHeader("Location", targetUrl, true);
+        server.send(302, "text/plain", ""); // HTTP 302 Redirect forces OS to launch browser pop-up
+    });*/
+
+    // Explicit handlers for common OS captive portal probes
+    server.on("/hotspot-detect.html", handleRoot); // Apple iOS / macOS
+    server.on("/generate_204", handleRoot);        // Android / ChromeOS
+    server.on("/gen_204", handleRoot);             // Android alternative
+    server.on("/connecttest.txt", handleRoot);     // Windows / Android
+    server.on("/redirect", handleRoot);           // MSFT
+
+    // Catch-all route: Serve the root dashboard directly with HTTP 200 OK
+    server.onNotFound([]() {
+        handleRoot(); // Serving the dashboard page directly forces OS pop-ups reliably
+    });
+
+
     server.begin();
 }
 
-void handleWebServer() { server.handleClient(); }
+void handleWebServer() {
+    dnsServer.processNextRequest();
+    server.handleClient(); 
+}

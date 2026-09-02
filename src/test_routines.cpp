@@ -1,6 +1,7 @@
 #include "test_routines.h"
 #include "motion_control.h"
 #include "web_server.h"
+#include "persistence.h"
 #include "power_measurement.h"
 #include "sensors.h"
 #include <esp_task_wdt.h>
