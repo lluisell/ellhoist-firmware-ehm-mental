@@ -5,12 +5,14 @@
 #include "positioning.h"
 #include "sensors.h"
 #include "test_routines.h"
+#include "melodies.h"
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Preferences.h>
 #include <SD.h>
 #include <Update.h>
 #include <time.h>
+#include <esp_task_wdt.h> // Add at top of web_server.cpp if not present
 
 static WebServer server(80);
 static Preferences prefs;
@@ -80,6 +82,7 @@ static void handleRoot() {
         .btn-test { background: #ffc107; color: #000; } .btn-ctrl { background: #6f42c1; }
         .btn-ntp { background: #fd7e14; } .btn-ota { background: #00adb5; }
         input[type=number], input[type=text] { background: #2b2b2b; color: #fff; padding: 6px; border-radius: 4px; border: 1px solid #444; width: 100px; }
+        select { background: #2b2b2b; color: #fff; padding: 6px; border-radius: 4px; border: 1px solid #444; width: 100%; margin: 4px 0; }
         input[type=file] { background: #2b2b2b; color: #fff; padding: 8px; border-radius: 4px; border: 1px solid #444; width: 100%; box-sizing: border-box; margin-bottom: 10px; }
         pre { background: #000; color: #00ff66; padding: 10px; border-radius: 5px; height: 200px; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word; }
     </style>
@@ -119,7 +122,6 @@ static void handleRoot() {
             <p>Calculated Motor Power: <span id="mot-pwr" class="val">0.00</span> W</p>
         </div>
 
-
         <div class="card">
             <h3>Encoder Positioning</h3>
             <p>Raw Count: <span id="enc-raw" class="val">0</span></p>
@@ -153,7 +155,22 @@ static void handleRoot() {
             <button class="btn btn-test" onclick="sendCmd('/api/brake?mode=br2')">TEST BR2</button>
             <button class="btn btn-ctrl" onclick="sendCmd('/api/brake?mode=none')">NORMAL</button>
         </div>
-        
+
+        <div class="card">
+            <h3>Buzzer Melodies Configuration</h3>
+            <label>Startup Melody:</label><br>
+            <select id="sel-startup"></select><br>
+            
+            <label>Upper Limit Melody:</label><br>
+            <select id="sel-upper"></select><br>
+            
+            <label>Lower Limit Melody:</label><br>
+            <select id="sel-lower"></select><br><br>
+            
+            <button class="btn btn-fw" onclick="saveMelodies()">SAVE MELODIES</button>
+            <button class="btn btn-test" onclick="previewMelody('startup')">PREVIEW STARTUP</button>
+        </div>
+
         <div class="card">
             <h3>DC Power Telemetry (INA226)</h3>
             <p>Loop Bus Voltage: <span id="dc-v" class="val">0.00</span> V</p>
@@ -194,6 +211,36 @@ static void handleRoot() {
         
         function runToTarget() {
             sendCmd('/api/run_to_pos?target=' + document.getElementById('target-pos').value);
+        }
+
+        function loadMelodies() {
+            fetch('/api/get_melodies').then(r => r.json()).then(d => {
+                let opts = "";
+                d.available.forEach(m => { opts += `<option value="${m.id}">${m.name}</option>`; });
+                
+                const sStart = document.getElementById('sel-startup');
+                const sUpper = document.getElementById('sel-upper');
+                const sLower = document.getElementById('sel-lower');
+                
+                sStart.innerHTML = opts; sUpper.innerHTML = opts; sLower.innerHTML = opts;
+                
+                sStart.value = d.selected.startup;
+                sUpper.value = d.selected.upper;
+                sLower.value = d.selected.lower;
+            });
+        }
+
+        function saveMelodies() {
+            const start = document.getElementById('sel-startup').value;
+            const upper = document.getElementById('sel-upper').value;
+            const lower = document.getElementById('sel-lower').value;
+            sendCmd(`/api/set_melodies?start=${start}&upper=${upper}&lower=${lower}`);
+        }
+
+        function previewMelody(type) {
+            let id = 0;
+            if (type === 'startup') id = document.getElementById('sel-startup').value;
+            sendCmd(`/api/preview_melody?id=${id}`);
         }
 
         function poll() {
@@ -270,6 +317,7 @@ static void handleRoot() {
 
         window.onload = () => {
             fetch('/api/sd').then(r => r.text()).then(h => document.getElementById('sd-list').innerHTML = h);
+            loadMelodies();
             pollInterval = setInterval(poll, 500);
         };
     </script>
@@ -292,6 +340,10 @@ static void handleUpdateResponse() {
 
 static void handleUpdateUpload() {
     HTTPUpload& upload = server.upload();
+
+    // Feed Watchdog on every incoming chunk to prevent OTA reboot
+    esp_task_wdt_reset();
+
     if (upload.status == UPLOAD_FILE_START) {
         appendDiagLog("[OTA] Firmware update started: " + upload.filename + "\n");
         if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
@@ -304,7 +356,7 @@ static void handleUpdateUpload() {
         yield();
     } else if (upload.status == UPLOAD_FILE_END) {
         if (Update.end(true)) {
-            appendDiagLog("[OTA] Flashing successful! Total size: " + String(upload.totalSize) + " bytes\n");
+            appendDiagLog("[OTA] Flashing successful! Size: " + String(upload.totalSize) + " bytes\n");
         } else {
             Update.printError(Serial);
         }
@@ -450,10 +502,46 @@ static void handleBrakeAPI() {
     server.send(200, "text/plain", "Brake mode updated.");
 }
 
+static void handleGetMelodiesAPI() {
+    String json = "{\"selected\":{";
+    json += "\"startup\":" + String(sysStats.startupMelody) + ",";
+    json += "\"upper\":" + String(sysStats.upperLimitMelody) + ",";
+    json += "\"lower\":" + String(sysStats.lowerLimitMelody) + "},\"available\":[";
+
+    for (int i = 0; i < MELODY_COUNT; i++) {
+        json += "{\"id\":" + String(AVAILABLE_MELODIES[i].id) + ",\"name\":\"" + String(AVAILABLE_MELODIES[i].name) + "\"}";
+        if (i < MELODY_COUNT - 1) json += ",";
+    }
+    json += "]}";
+
+    server.send(200, "application/json", json);
+}
+
+static void handleSetMelodiesAPI() {
+    if (server.hasArg("start")) sysStats.startupMelody = server.arg("start").toInt();
+    if (server.hasArg("upper")) sysStats.upperLimitMelody = server.arg("upper").toInt();
+    if (server.hasArg("lower")) sysStats.lowerLimitMelody = server.arg("lower").toInt();
+    
+    saveStatsToEEPROM();
+    server.send(200, "text/plain", "Melodies updated successfully.");
+}
+
+static void handlePreviewMelodyAPI() {
+    if (server.hasArg("id")) {
+        MelodyID id = (MelodyID)server.arg("id").toInt();
+        server.send(200, "text/plain", "Playing melody preview.");
+        playMelody(id); // Send response FIRST, then execute sequence
+    } else {
+        server.send(400, "text/plain", "Missing id");
+    }
+}
+
 static void handleSDAPI() { server.send(200, "text/html", getSDFilesListHTML()); }
 static void handleDiagAPI() { server.send(200, "text/plain", diagLogBuffer); }
 
 void initWebServer(const char* apSSID, const char* apPassword) {
+    diagLogBuffer.reserve(4096);
+
     WiFi.mode(WIFI_AP_STA);
     if (apPassword != NULL) WiFi.softAP(apSSID, apPassword);
     else WiFi.softAP(apSSID);
@@ -471,6 +559,9 @@ void initWebServer(const char* apSSID, const char* apPassword) {
     server.on("/api/motion", handleMotionAPI);
     server.on("/api/run_to_pos", handleRunToPosAPI);
     server.on("/api/brake", handleBrakeAPI);
+    server.on("/api/get_melodies", handleGetMelodiesAPI);
+    server.on("/api/set_melodies", handleSetMelodiesAPI);
+    server.on("/api/preview_melody", handlePreviewMelodyAPI);
     server.on("/api/sd", handleSDAPI);
     server.on("/api/diag", handleDiagAPI);
 

@@ -13,11 +13,13 @@ struct SystemStats {
     uint8_t  controlMode; // 0 = LOW_VOLTAGE, 1 = DIRECT
     int32_t  upperLimit;
     int32_t  lowerLimit;
+    uint8_t  startupMelody;     // Selected Melody ID
+    uint8_t  upperLimitMelody;  // Selected Melody ID
+    uint8_t  lowerLimitMelody;  // Selected Melody ID
 };
 
 extern SystemStats sysStats;
 
-// --- PERSISTENCE PROTOTYPES ---
 void initPersistence();
 void updatePeriodicStats();
 void incrementBR1Cycles();

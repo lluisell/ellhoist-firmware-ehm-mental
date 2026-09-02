@@ -56,7 +56,7 @@ int32_t getCalculatedPosition() {
     return positionOffset + (int32_t)((float)encoderPosition / sysStats.encoderScale);
 }
 
-// Explicit Calibration/New Entry: Zero raw counts & set new offset
+// Calibration: Zero raw counts & set new offset
 void setEncoderPosition(int32_t newPos) {
     noInterrupts();
     encoderPosition = 0;

@@ -36,7 +36,6 @@ MotionDirection getMotionState();
 void setOperationControlMode(OperationControlMode mode);
 void updateMotionOutputs();
 
-// --- NEW MOTION LOGIC & LIMIT FUNCTIONS ---
 bool runToTargetPosition(int32_t target);
 void processMotionLogic();
 int32_t getTargetPosition();

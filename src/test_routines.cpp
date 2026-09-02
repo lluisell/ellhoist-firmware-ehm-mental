@@ -3,6 +3,7 @@
 #include "web_server.h"
 #include "power_measurement.h"
 #include "sensors.h"
+#include <esp_task_wdt.h>
 
 RTC_DS3231 rtc;
 HardwareSerial RS485_Port0(0);
@@ -20,6 +21,7 @@ void playStartupMelody() {
     int melody[] = { 523, 659, 784, 1047 };
     int durations[] = { 100, 100, 100, 250 };
     for (int i = 0; i < 4; i++) {
+        esp_task_wdt_reset();
         tone(PIN_BUZZER, melody[i], durations[i]);
         delay((int)(durations[i] * 1.25));
         noTone(PIN_BUZZER);
@@ -29,6 +31,7 @@ void playStartupMelody() {
 void playLoudAlert() {
     Serial.print("\r\n[BUZZER] Playing 4.0 kHz Resonant Alert...\r\n");
     for (int i = 0; i < 3; i++) {
+        esp_task_wdt_reset();
         tone(PIN_BUZZER, 4000, 100);
         delay(150);
         noTone(PIN_BUZZER);
@@ -40,6 +43,7 @@ void playMelody() {
     int melody[] = { 262, 330, 392, 523, 392, 784 }; 
     int durations[] = { 150, 150, 150, 200, 150, 400 }; 
     for (int i = 0; i < 6; i++) {
+        esp_task_wdt_reset();
         tone(PIN_BUZZER, melody[i], durations[i]);
         delay(durations[i] * 1.30);
         noTone(PIN_BUZZER);
@@ -129,6 +133,7 @@ void sequenceMCPOutputsOnStartup() {
 
     delay(1000);
     for (int i = 0; i < 14; i++) {
+        esp_task_wdt_reset();
         writeMCP(0x09, targets[i].bitMask);
         char buf[100];
         snprintf(buf, sizeof(buf), "[TEST] %s --> ON (2 sec)\r\n", targets[i].label);
@@ -141,10 +146,27 @@ void sequenceMCPOutputsOnStartup() {
     logDiag("=========================================\r\n\r\n");
 }
 
+// WATCHDOG-SAFE NON-BLOCKING SERIAL LINE READER
 static String readSerialLine() {
-    while (Serial.available()) Serial.read();
-    while (!Serial.available()) delay(10);
-    String line = Serial.readStringUntil('\n');
+    while (Serial.available()) Serial.read(); // Clear buffer
+    
+    String line = "";
+    while (true) {
+        esp_task_wdt_reset(); // Keep watchdog alive while waiting for human input
+        handleWebServer();    // Keep web server responsive
+        
+        if (Serial.available() > 0) {
+            char c = (char)Serial.read();
+            if (c == '\n' || c == '\r') {
+                if (line.length() > 0) {
+                    break;
+                }
+            } else {
+                line += c;
+            }
+        }
+        delay(10);
+    }
     line.trim();
     return line;
 }
@@ -155,6 +177,7 @@ void liveAnalogMonitor() {
     while(Serial.available()) Serial.read();
 
     while (true) {
+        esp_task_wdt_reset();
         if (Serial.available() > 0 && Serial.read() == 'q') break;
 
         Serial.printf("V_L1L2_A: %04d | V_L1L2_B: %04d | I_MOT_U: %04d | I_MOT_V: %04d | I_MOT_W: %04d\r\n", 
@@ -174,6 +197,7 @@ void testEncoder() {
     bool usePullup = true;
 
     while (true) {
+        esp_task_wdt_reset();
         if (Serial.available() > 0) {
             char c = Serial.read();
             if (c == 'q' || c == 'Q') break;
@@ -189,9 +213,6 @@ void testEncoder() {
         int rawA = digitalRead(PIN_ENC_A);
         int rawB = digitalRead(PIN_ENC_B);
 
-        /*Serial.printf("GPIO20 (ENC_A): %d | GPIO21 (ENC_B): %d | INTERRUPT_COUNT: %6lu | POS: %6ld\r\n", 
-                      rawA, rawB, encoderTotalPulses, encoderPosition);*/
-        
         delay(100);
     }
     
@@ -205,6 +226,7 @@ void scanI2C() {
     setI2CNormal();
     int nDevices = 0;
     for(byte address = 1; address < 127; address++) {
+        esp_task_wdt_reset();
         Wire.beginTransmission(address);
         if (Wire.endTransmission() == 0) {
             Serial.printf("Found device at 0x%02X", address);
@@ -293,6 +315,7 @@ void liveI2CDashboard() {
     while(Serial.available()) Serial.read();
 
     while (true) {
+        esp_task_wdt_reset();
         if (Serial.available() > 0 && Serial.read() == 'q') break;
 
         DateTime now = rtc.now();

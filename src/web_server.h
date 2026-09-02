@@ -3,14 +3,10 @@
 
 #include <Arduino.h>
 
-// --- FUNCTION PROTOTYPES ---
 void initWebServer(const char* apSSID, const char* apPassword = NULL);
 void handleWebServer();
 void appendDiagLog(const String& logMsg);
-
-// NVS Wi-Fi Storage Helpers
-bool connectToSavedWiFi();
 void saveWiFiCredentials(const String& ssid, const String& password);
-void clearWiFiCredentials();
+bool connectToSavedWiFi();
 
 #endif // WEB_SERVER_H
