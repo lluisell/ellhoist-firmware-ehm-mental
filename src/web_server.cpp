@@ -4,7 +4,7 @@
 #include "persistence.h"
 #include "positioning.h"
 #include "sensors.h"
-#include "test_routines.h"
+#include "telemetry_helper.h"
 #include "melodies.h"
 #include <WiFi.h>
 #include <WebServer.h>
@@ -12,15 +12,12 @@
 #include <SD.h>
 #include <Update.h>
 #include <time.h>
-#include <esp_task_wdt.h> // Add at top of web_server.cpp if not present
+#include <esp_task_wdt.h>
 
 static WebServer server(80);
 static DNSServer dnsServer;
 static String diagLogBuffer = "";
 static const byte DNS_PORT = 53;
-
-
-
 
 bool connectToSavedWiFi() {
     String ssid = getSSID();
@@ -45,15 +42,23 @@ void appendDiagLog(const String& logMsg) {
     }
 }
 
-
 static String getSDFilesListHTML() {
     File root = SD.open("/");
-    if (!root || !root.isDirectory()) return "<p style='color:#ff5555;'>SD Card Offline.</p>";
+    if (!root || !root.isDirectory()) return "<p style='color:#ef4444;'>SD Card Offline.</p>";
 
-    String html = "<ul>";
+    String html = "<ul style='list-style:none; padding-left:0; margin:0;'>";
     File file = root.openNextFile();
     while (file) {
-        html += "<li><strong>" + String(file.name()) + "</strong> (" + String(file.size()) + " B)</li>";
+        String fileName = String(file.name());
+        if (!fileName.startsWith("/")) fileName = "/" + fileName;
+        
+        html += "<li style='margin-bottom:8px; display:flex; align-items:center; justify-content:space-between; background:rgba(255,255,255,0.02); padding:8px 12px; border-radius:6px; border:1px solid #2e2e36;'>";
+        html += "<span>&#128196; <strong style='color:#f8fafc;'>" + fileName + "</strong> <span style='color:#71717a; font-size:0.85em; font-family:monospace;'>(" + String(file.size()) + " B)</span></span>";
+        html += "<span style='display:flex; gap:8px;'>";
+        html += "<a href='/download?file=" + fileName + "&inline=1' target='_blank' style='color:#fbbf24; text-decoration:none; font-size:0.82em; font-weight:600; background:rgba(251,191,36,0.12); padding:4px 10px; border-radius:6px; border:1px solid rgba(251,191,36,0.25);'>View</a>";
+        html += "<a href='/download?file=" + fileName + "' download style='color:#f59e0b; text-decoration:none; font-size:0.82em; font-weight:600; background:rgba(245,158,11,0.12); padding:4px 10px; border-radius:6px; border:1px solid rgba(245,158,11,0.25);'>Download</a>";
+        html += "</span></li>";
+
         file = root.openNextFile();
     }
     root.close();
@@ -61,45 +66,210 @@ static String getSDFilesListHTML() {
     return html;
 }
 
+static void handleDownloadFileAPI() {
+    if (!server.hasArg("file")) {
+        server.send(400, "text/plain", "Missing file parameter");
+        return;
+    }
+
+    String path = server.arg("file");
+    if (!path.startsWith("/")) path = "/" + path;
+
+    if (!SD.exists(path)) {
+        server.send(404, "text/plain", "File Not Found");
+        return;
+    }
+
+    File downloadFile = SD.open(path, FILE_READ);
+    if (!downloadFile) {
+        server.send(500, "text/plain", "Failed to open file");
+        return;
+    }
+
+    bool isInline = (server.hasArg("inline") && server.arg("inline") == "1");
+    String fileNameOnly = path.substring(path.lastIndexOf('/') + 1);
+
+    server.setContentLength(downloadFile.size());
+    server.sendHeader("Content-Type", "text/plain");
+
+    if (!isInline) {
+        server.sendHeader("Content-Disposition", "attachment; filename=\"" + fileNameOnly + "\"");
+    }
+
+    server.sendHeader("Connection", "close");
+
+    uint8_t buffer[512];
+    while (downloadFile.available()) {
+        size_t bytesRead = downloadFile.read(buffer, sizeof(buffer));
+        server.client().write(buffer, bytesRead);
+        esp_task_wdt_reset();
+    }
+
+    downloadFile.close();
+}
+
 static void handleRoot() {
     String html = R"rawliteral(
 <!DOCTYPE html><html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>EHM-MENTAL Dashboard</title>
+    <title>ELL HOIST - EHM-MENTAL Dashboard</title>
     <style>
-        body { font-family: 'Segoe UI', sans-serif; margin: 20px; background: #121212; color: #e0e0e0; }
-        h2, h3 { color: #00adb5; margin-top: 0; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 15px; }
-        .card { background: #1e1e1e; padding: 18px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.4); }
-        .val { font-weight: bold; color: #00ffcc; }
-        .badge { background: #00adb5; color: #fff; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
-        .btn { padding: 10px 16px; font-size: 14px; margin: 4px; border: none; border-radius: 4px; cursor: pointer; color: #fff; font-weight: bold; }
-        .btn-fw { background: #28a745; } .btn-rev { background: #17a2b8; } .btn-stop { background: #dc3545; }
-        .btn-test { background: #ffc107; color: #000; } .btn-ctrl { background: #6f42c1; }
-        .btn-ntp { background: #fd7e14; } .btn-ota { background: #00adb5; }
-        input[type=number], input[type=text] { background: #2b2b2b; color: #fff; padding: 6px; border-radius: 4px; border: 1px solid #444; width: 100px; }
-        select { background: #2b2b2b; color: #fff; padding: 6px; border-radius: 4px; border: 1px solid #444; width: 100%; margin: 4px 0; }
-        input[type=file] { background: #2b2b2b; color: #fff; padding: 8px; border-radius: 4px; border: 1px solid #444; width: 100%; box-sizing: border-box; margin-bottom: 10px; }
-        pre { background: #000; color: #00ff66; padding: 10px; border-radius: 5px; height: 200px; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word; }
+        * { box-sizing: border-box; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
+            margin: 0; padding: 24px; 
+            background: #111113; 
+            color: #f4f4f5; 
+            line-height: 1.5;
+        }
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid #27272a;
+        }
+        h2 { 
+            color: #ffffff; 
+            margin: 0; 
+            font-size: 1.5rem; 
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+        h2 span { color: #f59e0b; }
+        h3 { 
+            color: #fbbf24; 
+            margin-top: 0; 
+            margin-bottom: 16px; 
+            font-size: 1.02rem; 
+            font-weight: 700; 
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+        .grid { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); 
+            gap: 16px; 
+        }
+        .card { 
+            background: #1c1c20; 
+            padding: 20px; 
+            border-radius: 12px; 
+            border: 1px solid #27272a; 
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5); 
+            transition: border-color 0.2s ease;
+        }
+        .card:hover { border-color: #3f3f46; }
+        p { margin: 8px 0; color: #a1a1aa; font-size: 0.92rem; }
+        .val { font-weight: 600; color: #fbbf24; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+        .badge { 
+            background: rgba(245, 158, 11, 0.12); 
+            color: #f59e0b; 
+            border: 1px solid rgba(245, 158, 11, 0.3);
+            padding: 3px 10px; 
+            border-radius: 9999px; 
+            font-weight: 600; 
+            font-size: 0.78rem;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            display: inline-block;
+        }
+        .btn { 
+            padding: 9px 16px; 
+            font-size: 13px; 
+            margin: 4px; 
+            border: none; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            color: #ffffff; 
+            font-weight: 600; 
+            letter-spacing: 0.02em;
+            transition: all 0.2s ease;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        }
+        .btn:hover { opacity: 0.9; transform: translateY(-1px); }
+        .btn:active { transform: translateY(0); }
+        .btn-fw { background: linear-gradient(135deg, #16a34a, #22c55e); } 
+        .btn-rev { background: linear-gradient(135deg, #d97706, #f59e0b); color: #0a0e1a; } 
+        .btn-stop { background: linear-gradient(135deg, #dc2626, #ef4444); } 
+        .btn-test { background: linear-gradient(135deg, #d97706, #fbbf24); color: #000000; } 
+        .btn-ctrl { background: linear-gradient(135deg, #475569, #64748b); } 
+        .btn-ota { background: linear-gradient(135deg, #d97706, #f59e0b); color: #0a0e1a; width: 100%; margin: 8px 0 0 0; }
+        input[type=number], input[type=text] { 
+            background: #121214; 
+            color: #f8fafc; 
+            padding: 8px 12px; 
+            border-radius: 8px; 
+            border: 1px solid #3f3f46; 
+            width: 120px; 
+            font-size: 0.9rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        input[type=number]:focus, input[type=text]:focus, select:focus {
+            border-color: #f59e0b;
+            box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.2);
+        }
+        select { 
+            background: #121214; 
+            color: #f8fafc; 
+            padding: 8px 12px; 
+            border-radius: 8px; 
+            border: 1px solid #3f3f46; 
+            width: 100%; 
+            margin: 6px 0 12px 0; 
+            font-size: 0.9rem;
+            outline: none;
+        }
+        input[type=file] { 
+            background: #121214; 
+            color: #a1a1aa; 
+            padding: 10px; 
+            border-radius: 8px; 
+            border: 1px dashed #3f3f46; 
+            width: 100%; 
+            box-sizing: border-box; 
+            margin-bottom: 8px; 
+            font-size: 0.85rem;
+        }
+        pre { 
+            background: #09090b; 
+            color: #10b981; 
+            padding: 12px; 
+            border-radius: 8px; 
+            border: 1px solid #27272a;
+            height: 200px; 
+            overflow-y: auto; 
+            white-space: pre-wrap; 
+            word-wrap: break-word; 
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.82rem;
+            margin: 0;
+        }
+        hr { border: 0; border-top: 1px solid #27272a; margin: 16px 0; }
+        label { font-size: 0.85rem; color: #a1a1aa; font-weight: 500; }
     </style>
 </head>
 <body>
-    <h2>EHM-MENTAL PCB Control & System Telemetry</h2>
+    <div class="header">
+        <h2>ELL HOIST <span>EHM-MENTAL</span></h2>
+        <span class="badge">Live Connection</span>
+    </div>
     
     <div class="grid">
         <div class="card">
-            <h3>System Mode & RTC Sync</h3>
+            <h3>System Information</h3>
+            <p>Device Serial: <span id="dev-sn" class="val">--</span></p>
+            <p>Hardware ID: <span id="hw-id" class="val">--</span></p>
             <p>RTC PCB Time: <span id="rtc-time" class="val">--</span></p>
             <p>Power State: <span id="pwr-mode" class="badge">--</span></p>
             <p>Control Mode: <span id="ctrl-mode" class="val">--</span></p>
-            <button class="btn btn-ctrl" onclick="sendCmd('/api/ctrl_mode?mode=direct')">Direct Mode</button>
-            <button class="btn btn-ctrl" onclick="sendCmd('/api/ctrl_mode?mode=low_voltage')">Low Voltage Mode</button>
-            <button class="btn btn-ntp" onclick="sendCmd('/api/sync_rtc')">Sync RTC via Internet</button>
         </div>
 
         <div class="card">
-            <h3>Environment & Accelerometer</h3>
+            <h3>Environment</h3>
             <p>Temperature: <span id="env-temp" class="val">0.00</span> &deg;C</p>
             <p>Humidity: <span id="env-hum" class="val">0.00</span> %</p>
             <p>Pressure: <span id="env-pres" class="val">0.00</span> hPa</p>
@@ -108,7 +278,7 @@ static void handleRoot() {
         </div>
 
         <div class="card">
-            <h3>Motor Telemetry & Power</h3>
+            <h3>Power Telemetry</h3>
             <p>Phase U Current: <span id="cur-u" class="val">0.00</span> A</p>
             <p>Phase V Current: <span id="cur-v" class="val">0.00</span> A</p>
             <p>Phase W Current: <span id="cur-w" class="val">0.00</span> A</p>
@@ -126,46 +296,47 @@ static void handleRoot() {
             <p>Scale Factor: <span id="enc-scale" class="val">1.0</span> counts/mm</p>
             <p>Upper Limit: <span id="lim-upper" class="val">0</span> mm</p>
             <p>Lower Limit: <span id="lim-lower" class="val">0</span> mm</p>
-            <hr style="border-color:#333;">
-            <input type="number" id="new-pos" placeholder="New Pos">
-            <button class="btn btn-fw" onclick="setPos()">Set Position</button><br><br>
-            <input type="number" step="0.001" id="new-scale" placeholder="Counts/mm">
-            <button class="btn btn-rev" onclick="setScale()">Set Scale</button><br><br>
-            <input type="number" id="new-upper" placeholder="Upper Lim">
-            <button class="btn btn-test" onclick="setUpper()">Set Upper Lim</button><br><br>
-            <input type="number" id="new-lower" placeholder="Lower Lim">
-            <button class="btn btn-test" onclick="setLower()">Set Lower Lim</button>
+            <hr>
+            <div style="display:flex; gap:8px; margin-bottom:8px;">
+                <input type="number" id="new-pos" placeholder="New Pos">
+                <button class="btn btn-fw" onclick="setPos()">Set Position</button>
+            </div>
+            <div style="display:flex; gap:8px; margin-bottom:8px;">
+                <input type="number" step="0.001" id="new-scale" placeholder="Counts/mm">
+                <button class="btn btn-rev" onclick="setScale()">Set Scale</button>
+            </div>
+            <div style="display:flex; gap:8px; margin-bottom:8px;">
+                <input type="number" id="new-upper" placeholder="Upper Lim">
+                <button class="btn btn-test" onclick="setUpper()">Set Upper</button>
+            </div>
+            <div style="display:flex; gap:8px;">
+                <input type="number" id="new-lower" placeholder="Lower Lim">
+                <button class="btn btn-test" onclick="setLower()">Set Lower</button>
+            </div>
         </div>
 
         <div class="card">
-            <h3>Motion Control</h3>
-            <button class="btn btn-fw" onclick="sendCmd('/api/motion?dir=fw')">FORWARD</button>
-            <button class="btn btn-rev" onclick="sendCmd('/api/motion?dir=rev')">REVERSE</button>
-            <button class="btn btn-stop" onclick="sendCmd('/api/motion?dir=stop')">STOP</button>
-            
-            <h3 style="margin-top:12px;">Run to Target Position</h3>
-            <input type="number" id="target-pos" placeholder="Target (mm)">
-            <button class="btn btn-ctrl" onclick="runToTarget()">RUN TO TARGET</button>
-
-            <h3 style="margin-top:12px;">Brake Testing Modes</h3>
+            <h3>Brake Testing Modes</h3>
             <button class="btn btn-test" onclick="sendCmd('/api/brake?mode=br1')">TEST BR1</button>
             <button class="btn btn-test" onclick="sendCmd('/api/brake?mode=br2')">TEST BR2</button>
             <button class="btn btn-ctrl" onclick="sendCmd('/api/brake?mode=none')">NORMAL</button>
         </div>
 
         <div class="card">
-            <h3>Buzzer Melodies Configuration</h3>
-            <label>Startup Melody:</label><br>
-            <select id="sel-startup"></select><br>
+            <h3>Buzzer Melodies</h3>
+            <label>Startup Melody</label>
+            <select id="sel-startup"></select>
             
-            <label>Upper Limit Melody:</label><br>
-            <select id="sel-upper"></select><br>
+            <label>Upper Limit Melody</label>
+            <select id="sel-upper"></select>
             
-            <label>Lower Limit Melody:</label><br>
-            <select id="sel-lower"></select><br><br>
+            <label>Lower Limit Melody</label>
+            <select id="sel-lower"></select>
             
-            <button class="btn btn-fw" onclick="saveMelodies()">SAVE MELODIES</button>
-            <button class="btn btn-test" onclick="previewMelody('startup')">PREVIEW STARTUP</button>
+            <div style="margin-top:8px;">
+                <button class="btn btn-fw" onclick="saveMelodies()">SAVE MELODIES</button>
+                <button class="btn btn-test" onclick="previewMelody('startup')">PREVIEW</button>
+            </div>
         </div>
 
         <div class="card">
@@ -184,15 +355,21 @@ static void handleRoot() {
         </div>
     </div>
 
-    <div class="grid" style="margin-top:15px;">
+    <div class="grid" style="margin-top:16px;">
         <div class="card">
             <h3>Firmware OTA Update (.bin)</h3>
             <input type="file" id="ota-file" accept=".bin">
             <button class="btn btn-ota" onclick="uploadFirmware()">UPLOAD & FLASH FIRMWARE</button>
             <p id="ota-status" style="margin-top:10px; font-weight:bold;"></p>
         </div>
-        <div class="card"><h3>SD Logs</h3><div id="sd-list">Loading...</div></div>
-        <div class="card"><h3>Live Console Log</h3><pre id="diag-log">Loading...</pre></div>
+        <div class="card">
+            <h3>SD Logs</h3>
+            <div id="sd-list">Loading...</div>
+        </div>
+        <div class="card">
+            <h3>Live Console Log</h3>
+            <pre id="diag-log">Loading...</pre>
+        </div>
     </div>
 
     <script>
@@ -205,10 +382,6 @@ static void handleRoot() {
         function setScale() { sendCmd('/api/set_scale?scale=' + document.getElementById('new-scale').value); }
         function setUpper() { sendCmd('/api/set_upper_limit?val=' + document.getElementById('new-upper').value); }
         function setLower() { sendCmd('/api/set_lower_limit?val=' + document.getElementById('new-lower').value); }
-        
-        function runToTarget() {
-            sendCmd('/api/run_to_pos?target=' + document.getElementById('target-pos').value);
-        }
 
         function loadMelodies() {
             fetch('/api/get_melodies').then(r => r.json()).then(d => {
@@ -242,6 +415,8 @@ static void handleRoot() {
 
         function poll() {
             fetch('/api/telemetry').then(r => r.json()).then(d => {
+                document.getElementById('dev-sn').textContent = d.devSerial || '--';
+                document.getElementById('hw-id').textContent = d.hwId || '--';
                 document.getElementById('rtc-time').textContent = d.rtc;
                 document.getElementById('pwr-mode').textContent = d.pwrStr;
                 document.getElementById('ctrl-mode').textContent = d.ctrlMode;
@@ -296,18 +471,18 @@ static void handleRoot() {
             const formData = new FormData();
             formData.append('update', file);
 
-            status.style.color = '#ffc107';
+            status.style.color = '#f59e0b';
             status.textContent = 'Uploading & Flashing... Do not disconnect power!';
 
             fetch('/update', { method: 'POST', body: formData })
                 .then(r => r.text())
                 .then(t => {
-                    status.style.color = '#28a745';
+                    status.style.color = '#22c55e';
                     status.textContent = t + ' Rebooting system...';
                     setTimeout(() => { location.reload(); }, 8000);
                 })
                 .catch(e => {
-                    status.style.color = '#dc3545';
+                    status.style.color = '#ef4444';
                     status.textContent = 'OTA Flash Failed!';
                 });
         }
@@ -338,7 +513,6 @@ static void handleUpdateResponse() {
 static void handleUpdateUpload() {
     HTTPUpload& upload = server.upload();
 
-    // Feed Watchdog on every incoming chunk to prevent OTA reboot
     esp_task_wdt_reset();
 
     if (upload.status == UPLOAD_FILE_START) {
@@ -361,75 +535,7 @@ static void handleUpdateUpload() {
 }
 
 static void handleTelemetryAPI() {
-    updateAllPowerMeasurements();
-    
-    float temp = 0, hum = 0, pres = 0;
-    readWeatherSensor(temp, hum, pres);
-
-    int16_t ax = 0, ay = 0, az = 0;
-    readAccelerometer(ax, ay, az);
-
-    DateTime now = rtc.now();
-
-    char rtcBuf[25];
-    snprintf(rtcBuf, sizeof(rtcBuf), "%04d-%02d-%02d %02d:%02d:%02d",
-             now.year(), now.month(), now.day(), now.hour(), now.minute(), now.second());
-
-    String json = "{";
-    json += "\"rtc\":\"" + String(rtcBuf) + "\",";
-    json += "\"pwrStr\":\"" + getPowerModeString() + "\",";
-    json += "\"ctrlMode\":\"" + String(currentCtrlMode == CTRL_MODE_DIRECT ? "DIRECT" : "LOW_VOLTAGE") + "\",";
-    json += "\"temp\":" + String(temp, 2) + ",";
-    json += "\"hum\":" + String(hum, 2) + ",";
-    json += "\"pres\":" + String(pres, 1) + ",";
-    json += "\"ax_mms2\":" + String(accelX_mms2, 1) + ",";
-    json += "\"ay_mms2\":" + String(accelY_mms2, 1) + ",";
-    json += "\"az_mms2\":" + String(accelZ_mms2, 1) + ",";
-    json += "\"pitch\":" + String(pitchDeg) + ",";
-    json += "\"tilt\":" + String(tiltDeg) + ",";
-    json += "\"curU\":" + String(motorCurrentU, 2) + ",";
-    json += "\"curV\":" + String(motorCurrentV, 2) + ",";
-    json += "\"curW\":" + String(motorCurrentW, 2) + ",";
-    json += "\"vL1L2\":" + String(vL1L2_RMS, 2) + ",";
-    json += "\"vL3L2\":" + String(vL3L2_RMS, 2) + ",";
-    json += "\"vL1L3\":" + String(vL1L3_RMS, 2) + ",";
-    json += "\"freq\":" + String(phaseFrequencyHz, 2) + ",";
-    json += "\"motPwr\":" + String(motorPower, 2) + ",";
-    json += "\"dcV\":" + String(inaBusVoltage, 2) + ",";
-    json += "\"dcI\":" + String(inaCurrent, 2) + ",";
-    json += "\"dcP\":" + String(inaPower, 2) + ",";
-    json += "\"devRun\":" + String(sysStats.deviceRuntimeSec) + ",";
-    json += "\"motRun\":" + String(sysStats.motorRuntimeSec) + ",";
-    json += "\"br1C\":" + String(sysStats.br1Cycles) + ",";
-    json += "\"br2C\":" + String(sysStats.br2Cycles) + ",";
-    json += "\"encRaw\":" + String(getRawEncoderCount()) + ",";
-    json += "\"encPos\":" + String(getCalculatedPosition()) + ",";
-    json += "\"encScale\":" + String(sysStats.encoderScale, 4) + ",";
-    json += "\"upperLim\":" + String(sysStats.upperLimit) + ",";
-    json += "\"lowerLim\":" + String(sysStats.lowerLimit);
-    json += "}";
-
-    server.send(200, "application/json", json);
-}
-
-static void handleSyncRTCAPI() {
-    if (WiFi.status() != WL_CONNECTED) {
-        server.send(400, "text/plain", "Error: Wi-Fi STA not connected to internet.");
-        return;
-    }
-
-    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-    struct tm timeinfo;
-    if (!getLocalTime(&timeinfo, 5000)) {
-        server.send(500, "text/plain", "Error: NTP Sync Timed Out.");
-        return;
-    }
-
-    rtc.adjust(DateTime(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, 
-                         timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec));
-
-    appendDiagLog("[RTC] Time synced via NTP server successfully.\n");
-    server.send(200, "text/plain", "RTC time synced with NTP server!");
+    server.send(200, "application/json", buildTelemetryJSON());
 }
 
 static void handleSetPositionAPI() {
@@ -458,36 +564,6 @@ static void handleSetLowerLimitAPI() {
         setLowerLimit(server.arg("val").toInt());
         server.send(200, "text/plain", "Lower limit updated.");
     } else server.send(400, "text/plain", "Missing val arg");
-}
-
-static void handleSetCtrlModeAPI() {
-    if (server.hasArg("mode")) {
-        String mode = server.arg("mode");
-        if (mode == "direct") setOperationControlMode(CTRL_MODE_DIRECT);
-        else setOperationControlMode(CTRL_MODE_LOW_VOLTAGE);
-        server.send(200, "text/plain", "Control mode updated.");
-    } else server.send(400, "text/plain", "Missing mode arg");
-}
-
-static void handleMotionAPI() {
-    if (!server.hasArg("dir")) return server.send(400, "text/plain", "Missing dir");
-    String dir = server.arg("dir");
-    bool ok = true;
-    if (dir == "fw") ok = setMotionState(MOTION_FORWARD);
-    else if (dir == "rev") ok = setMotionState(MOTION_REVERSE);
-    else ok = setMotionState(MOTION_STOP);
-
-    if (ok) server.send(200, "text/plain", "Motion updated: " + dir);
-    else server.send(403, "text/plain", "Direct Control Blocked: Limits or Power Interlock!");
-}
-
-static void handleRunToPosAPI() {
-    if (server.hasArg("target")) {
-        int32_t t = server.arg("target").toInt();
-        bool ok = runToTargetPosition(t);
-        if (ok) server.send(200, "text/plain", "Running to target position: " + String(t));
-        else server.send(400, "text/plain", "Run to target blocked (limits or interlock)");
-    } else server.send(400, "text/plain", "Missing target arg");
 }
 
 static void handleBrakeAPI() {
@@ -527,7 +603,7 @@ static void handlePreviewMelodyAPI() {
     if (server.hasArg("id")) {
         MelodyID id = (MelodyID)server.arg("id").toInt();
         server.send(200, "text/plain", "Playing melody preview.");
-        playMelody(id); // Send response FIRST, then execute sequence
+        playMelody(id);
     } else {
         server.send(400, "text/plain", "Missing id");
     }
@@ -539,22 +615,14 @@ static void handleDiagAPI() { server.send(200, "text/plain", diagLogBuffer); }
 void initWebServer(const char* apSSID, const char* apPassword) {
     diagLogBuffer.reserve(4096);
 
-    /*WiFi.mode(WIFI_AP_STA);
-    if (apPassword != NULL) WiFi.softAP(apSSID, apPassword);
-    else WiFi.softAP(apSSID);
-
-    connectToSavedWiFi();*/
-
     WiFi.mode(WIFI_STA);
     bool connected = connectToSavedWiFi();
 
     if (!connected) {
-        // Enable Access Point mode
         WiFi.mode(WIFI_AP_STA);
         if (apPassword != NULL) WiFi.softAP(apSSID, apPassword);
         else WiFi.softAP(apSSID);
 
-        // Redirect ALL DNS lookup requests to ESP32 softAP IP (Triggers OS captive portal check)
         dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
         appendDiagLog("[WIFI] STA connection failed. SoftAP Captive Portal started at " + WiFi.softAPIP().toString() + "\n");
     } else {
@@ -562,15 +630,12 @@ void initWebServer(const char* apSSID, const char* apPassword) {
     }
 
     server.on("/", handleRoot);
+    server.on("/download", handleDownloadFileAPI);
     server.on("/api/telemetry", handleTelemetryAPI);
-    server.on("/api/sync_rtc", handleSyncRTCAPI);
     server.on("/api/set_position", handleSetPositionAPI);
     server.on("/api/set_scale", handleSetScaleAPI);
     server.on("/api/set_upper_limit", handleSetUpperLimitAPI);
     server.on("/api/set_lower_limit", handleSetLowerLimitAPI);
-    server.on("/api/ctrl_mode", handleSetCtrlModeAPI);
-    server.on("/api/motion", handleMotionAPI);
-    server.on("/api/run_to_pos", handleRunToPosAPI);
     server.on("/api/brake", handleBrakeAPI);
     server.on("/api/get_melodies", handleGetMelodiesAPI);
     server.on("/api/set_melodies", handleSetMelodiesAPI);
@@ -580,24 +645,15 @@ void initWebServer(const char* apSSID, const char* apPassword) {
 
     server.on("/update", HTTP_POST, handleUpdateResponse, handleUpdateUpload);
 
-    /*server.onNotFound([]() {
-        String targetUrl = "http://" + WiFi.softAPIP().toString() + "/";
-        server.sendHeader("Location", targetUrl, true);
-        server.send(302, "text/plain", ""); // HTTP 302 Redirect forces OS to launch browser pop-up
-    });*/
+    server.on("/hotspot-detect.html", handleRoot);
+    server.on("/generate_204", handleRoot);
+    server.on("/gen_204", handleRoot);
+    server.on("/connecttest.txt", handleRoot);
+    server.on("/redirect", handleRoot);
 
-    // Explicit handlers for common OS captive portal probes
-    server.on("/hotspot-detect.html", handleRoot); // Apple iOS / macOS
-    server.on("/generate_204", handleRoot);        // Android / ChromeOS
-    server.on("/gen_204", handleRoot);             // Android alternative
-    server.on("/connecttest.txt", handleRoot);     // Windows / Android
-    server.on("/redirect", handleRoot);           // MSFT
-
-    // Catch-all route: Serve the root dashboard directly with HTTP 200 OK
     server.onNotFound([]() {
-        handleRoot(); // Serving the dashboard page directly forces OS pop-ups reliably
+        handleRoot();
     });
-
 
     server.begin();
 }

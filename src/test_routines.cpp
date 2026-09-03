@@ -4,9 +4,9 @@
 #include "persistence.h"
 #include "power_measurement.h"
 #include "sensors.h"
+#include "telemetry_helper.h"
 #include <esp_task_wdt.h>
 
-RTC_DS3231 rtc;
 HardwareSerial RS485_Port0(0);
 HardwareSerial RS485_Port1(1);
 

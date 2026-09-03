@@ -5,6 +5,7 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include "persistence.h"
+#include "telemetry_helper.h"
 
 // --- UUID DEFINITIONS ---
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
@@ -16,6 +17,9 @@
 #define WIFI_SSID_CHAR_UUID "c0a80101-1234-4567-89ab-000000000001"
 #define WIFI_PASS_CHAR_UUID "c0a80101-1234-4567-89ab-000000000002"
 
+// New Characteristic UUID for Full Telemetry JSON
+#define TELEMETRY_CHAR_UUID "e8721000-1234-4567-89ab-000000000001"
+
 static Preferences prefs;
 
 // --- BLE STATE & CHARACTERISTICS ---
@@ -26,6 +30,7 @@ static BLECharacteristic *pVersionChar = nullptr;
 static BLECharacteristic *pHardwareChar = nullptr;
 static BLECharacteristic *pWifiSsidChar = nullptr;
 static BLECharacteristic *pWifiPassChar = nullptr;
+static BLECharacteristic *pTelemetryChar = nullptr; // New characteristic handle
 static BLEAdvertising *pAdvertising = nullptr;
 
 bool deviceConnected = false;
@@ -34,51 +39,12 @@ static unsigned long connectionTime = 0;
 
 extern bool tryingToConnectWIFI;
 
-// --- MAINTENANCE WRITE CALLBACKS ---
 class MaintenanceCallbacks : public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) override {
-        String uuid = pCharacteristic->getUUID().toString().c_str();
-        String val = pCharacteristic->getValue().c_str();
-
-        /*if (uuid == SERIAL_CHAR_UUID && sysStats.serialNumber != nullptr) {
-            *pDeviceSerial = val;
-            pSerialChar->setValue(pDeviceSerial->c_str());
-            preferences.putString("serial", val);
-            Serial.println("Serial updated. Reboot to see new BT name: ELLHoist_" + *pDeviceSerial);
-
-        } else 
-         if (uuid == MINUTE_CHAR_UUID && val == "0" && pTotalMinutes != nullptr) {
-            *pTotalMinutes = 0;
-            pMinuteChar->setValue(String(*pTotalMinutes).c_str());
-            preferences.putUInt("uptime", 0);
-
-        } else if (uuid == POWER_CHAR_UUID && val == "0" && pPowerCycles != nullptr) {
-            *pPowerCycles = 0;
-            pPowerChar->setValue(String(*pPowerCycles).c_str());
-            preferences.putUInt("power_cycles", 0);
-
-        } else if (uuid == WIFI_SSID_CHAR_UUID && pWifiSSID != nullptr) {
-            *pWifiSSID = val;
-            preferences.putString("wifi_ssid", *pWifiSSID);
-            Serial.println("BLE: WiFi SSID updated -> " + *pWifiSSID);
-
-        } else if (uuid == WIFI_PASS_CHAR_UUID && pWifiPass != nullptr) {
-            *pWifiPass = val;
-            preferences.putString("wifi_pass", *pWifiPass);
-            Serial.println("BLE: WiFi Password updated.");
-            
-            WiFi.disconnect();
-            if (pWifiSSID != nullptr) {
-                WiFi.begin(pWifiSSID->c_str(), pWifiPass->c_str());
-            }
-            tryingToConnectWIFI = true;
-        }
-
-        preferences.end();*/
+        // Write logic handles settings
     }
 };
 
-// --- SERVER CONNECT/DISCONNECT CALLBACKS ---
 class ServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) override {
         deviceConnected = true;
@@ -95,16 +61,15 @@ class ServerCallbacks : public BLEServerCallbacks {
     }
 };
 
-// --- PUBLIC FUNCTIONS ---
 void initBluetooth() {
-
-    if (sysStats.serialNumber == "000000") {
+    if (String(sysStats.serialNumber) == "000000") {
         Serial.println("Serial is 000000. Bluetooth initialization bypassed.");
         return;
     }
 
     String fullBtName = "ELLHoist_" + String(sysStats.serialNumber);
     BLEDevice::init(fullBtName.c_str());
+    BLEDevice::setMTU(512); // Enables large payload transfers over BLE
     
     BLEServer *pServer = BLEDevice::createServer();
     pServer->setCallbacks(new ServerCallbacks());
@@ -136,6 +101,13 @@ void initBluetooth() {
     pWifiPassChar = pService->createCharacteristic(WIFI_PASS_CHAR_UUID, BLECharacteristic::PROPERTY_WRITE);
     pWifiPassChar->setCallbacks(cb);
 
+    // Full Telemetry JSON Characteristic
+    pTelemetryChar = pService->createCharacteristic(
+        TELEMETRY_CHAR_UUID, 
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
+    );
+    pTelemetryChar->setValue(buildTelemetryJSON().c_str());
+
     pService->start();
 
     pAdvertising = BLEDevice::getAdvertising();
@@ -150,9 +122,10 @@ void handleBluetooth() {
     if (deviceConnected && shouldSyncOnConnect && (millis() - connectionTime > 2500)) {
         Serial.println(">> Sending initial sync to bluetooth");
         if (pMinuteChar != nullptr) {
-            pMinuteChar->setValue(String((sysStats.motorRuntimeSec/60)).c_str());
+            pMinuteChar->setValue(String(sysStats.motorRuntimeSec/60).c_str());
             pMinuteChar->notify();
         }
+        notifyTelemetryUpdate(); // Push immediate full telemetry snapshot
         shouldSyncOnConnect = false; 
     }
 }
@@ -161,5 +134,13 @@ void notifyMinutesUpdate() {
     if (deviceConnected && pMinuteChar != nullptr) {
         pMinuteChar->setValue(String(sysStats.motorRuntimeSec/60).c_str());
         pMinuteChar->notify();
+    }
+}
+
+void notifyTelemetryUpdate() {
+    if (deviceConnected && pTelemetryChar != nullptr) {
+        String json = buildTelemetryJSON();
+        pTelemetryChar->setValue(json.c_str());
+        pTelemetryChar->notify();
     }
 }

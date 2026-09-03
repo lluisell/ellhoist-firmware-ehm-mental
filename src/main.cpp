@@ -1,6 +1,9 @@
 #include <Arduino.h>
 #include <nvs_flash.h>
 #include <esp_task_wdt.h>
+#include <WiFi.h>
+#include <time.h>
+#include <SD.h>
 #include "power_measurement.h"
 #include "motion_control.h"
 #include "persistence.h"
@@ -12,6 +15,7 @@
 #include "test_routines.h"
 #include "bluetooth.h"
 #include "websocket.h"
+#include "telemetry_helper.h"
 
 #define WDT_TIMEOUT_MSECONDS 500
 #define PIN_BTN_SELECT 9
@@ -188,80 +192,142 @@ void setup() {
     String fullBtName = "ELLHoist_" + String(sysStats.serialNumber) + "_AP";
     initWebServer(fullBtName.c_str(),"3LLH01s7");
 
-
     initWatchdog();
     playStartupMelodyConfigured();
 }
 
 bool inTestMenuMode = false;
+static String serialBuffer = "";
+
 void handleSerialAPI() {
-    if (Serial.available() > 0) {
-        // If actively using test routines CLI single-character mode
+    while (Serial.available() > 0) {
+        char c = Serial.read();
+
+        // 1. Single-character Test Menu Mode
         if (inTestMenuMode) {
-            char cmd = Serial.read();
-            if (cmd == 'x' || cmd == 'X') {
+            if (c == 'x' || c == 'X') {
                 inTestMenuMode = false;
-                Serial.println("Exited Test Menu. Returning to Main API mode.");
+                Serial.println("\r\nExited Test Menu. Returning to Main API mode.");
                 return;
             }
-            handleCLICommand(cmd);
+            handleCLICommand(c);
             return;
         }
 
-        String input = Serial.readStringUntil('\n');
-        input.trim();
-        if (input.length() == 0) return;
-
-        if (input == "RST") {
-            Serial.println(">> REBOOTING DEVICE...");
-            Serial.flush(); 
-            delay(500);     
-            ESP.restart();  
-        } 
-        else if (input == "TEST" || input == "MENU") {
-            inTestMenuMode = true;
-            Serial.println("\r\n--- Entering Test Routines CLI Menu ---");
-            Serial.println("Press 'X' at any prompt to return to Main API mode.");
-            printMenu();
-            return;
+        // 2. Echo character back to PuTTY terminal
+        if (c != '\r' && c != '\n') {
+            Serial.write(c);
+            serialBuffer += c;
         }
 
-        if (input.startsWith("SET_SN=")) {
-            String sn = input.substring(7);
-            sn.toCharArray(sysStats.serialNumber, sizeof(sysStats.serialNumber));
-            snprintf(sysStats.serialNumber, sizeof(sysStats.serialNumber), "%s", sn.c_str());
-            saveStatsToEEPROM();
-            Serial.println("OK:SN_SET");
-        } 
-        else if (input.startsWith("SET_MIN=")) {
-            sysStats.deviceRuntimeSec = input.substring(8).toInt() * 60;
-            saveStatsToEEPROM();
-            Serial.println("OK:MIN_SET");
-        } 
-        else if (input.startsWith("SET_PWR=")) {
-            sysStats.br1Cycles = input.substring(8).toInt();
-            saveStatsToEEPROM();
-            Serial.println("OK:PWR_SET");
-        } 
-        else if (input.startsWith("SET_SSID=")) {
-            setSSID(input.substring(9));
-            Serial.println("OK:SSID_SET");
-        } 
-        else if (input.startsWith("SET_PASS=")) {
-            setPass(input.substring(9));
-            Serial.println("OK:PASS_SET");
-        } 
-        else if (input == "INFO") {
-            Serial.println("--- START_INFO ---");
-            Serial.println("Serial: " + String(sysStats.serialNumber));
-            Serial.println("HWID: " + hwID);
-            Serial.println("Version: " + FIRMWARE_VERSION); 
-            Serial.printf("Runtime (sec): %u\n", sysStats.deviceRuntimeSec);
-            Serial.printf("BR1 Cycles: %u\n", sysStats.br1Cycles);
-            Serial.printf("BR2 Cycles: %u\n", sysStats.br2Cycles);
-            String ssid = getSSID();
-            Serial.println("WiFi SSID: " + (ssid == "" || ssid == "null" ? "NOT SET" : ssid));
-            Serial.println("--- END_INFO ---");
+        // 3. Process command on either '\r' or '\n'
+        if (c == '\r' || c == '\n') {
+            if (serialBuffer.length() > 0) {
+                String input = serialBuffer;
+                serialBuffer = ""; // Reset buffer
+                input.trim();
+
+                Serial.println(); // Print newline to terminal
+
+                if (input == "RST") {
+                    Serial.println(">> REBOOTING DEVICE...");
+                    Serial.flush(); 
+                    delay(500);     
+                    ESP.restart();  
+                } 
+                else if (input == "TEST" || input == "MENU") {
+                    inTestMenuMode = true;
+                    Serial.println("\r\n--- Entering Test Routines CLI Menu ---");
+                    Serial.println("Press 'X' at any prompt to return to Main API mode.");
+                    printMenu();
+                    return;
+                }
+                else if (input.startsWith("SET_SN=")) {
+                    String sn = input.substring(7);
+                    snprintf(sysStats.serialNumber, sizeof(sysStats.serialNumber), "%s", sn.c_str());
+                    saveStatsToEEPROM();
+                    Serial.println("OK:SN_SET");
+                } 
+                else if (input.startsWith("SET_MIN=")) {
+                    sysStats.deviceRuntimeSec = input.substring(8).toInt() * 60;
+                    saveStatsToEEPROM();
+                    Serial.println("OK:MIN_SET");
+                } 
+                else if (input.startsWith("SET_PWR=")) {
+                    sysStats.br1Cycles = input.substring(8).toInt();
+                    saveStatsToEEPROM();
+                    Serial.println("OK:PWR_SET");
+                } 
+                else if (input.startsWith("SET_SSID=")) {
+                    setSSID(input.substring(9));
+                    Serial.println("OK:SSID_SET");
+                } 
+                else if (input.startsWith("SET_PASS=")) {
+                    setPass(input.substring(9));
+                    Serial.println("OK:PASS_SET");
+                } 
+                else if (input.startsWith("SET_CTRL=")) {
+                    String mode = input.substring(9);
+                    mode.toUpperCase();
+                    if (mode == "DIRECT") {
+                        setOperationControlMode(CTRL_MODE_DIRECT);
+                        Serial.println("OK:CTRL_DIRECT");
+                    } else if (mode == "LOW_VOLTAGE") {
+                        setOperationControlMode(CTRL_MODE_LOW_VOLTAGE);
+                        Serial.println("OK:CTRL_LOW_VOLTAGE");
+                    } else {
+                        Serial.println("ERR:INVALID_CTRL_MODE");
+                    }
+                }
+                else if (input.startsWith("DEL_LOG=") || input.startsWith("DEL_FILE=")) {
+                    int idx = input.indexOf('=');
+                    String fileName = input.substring(idx + 1);
+                    fileName.trim();
+                    if (!fileName.startsWith("/")) fileName = "/" + fileName;
+
+                    if (SD.exists(fileName)) {
+                        if (SD.remove(fileName)) {
+                            Serial.println("OK:LOG_DELETED");
+                        } else {
+                            Serial.println("ERR:DELETE_FAILED");
+                        }
+                    } else {
+                        Serial.println("ERR:FILE_NOT_FOUND");
+                    }
+                }
+                else if (input == "SYNC_RTC") {
+                    if (WiFi.status() == WL_CONNECTED) {
+                        configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+                        struct tm timeinfo;
+                        if (getLocalTime(&timeinfo, 5000)) {
+                            rtc.adjust(DateTime(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, 
+                                                 timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec));
+                            Serial.println("OK:RTC_SYNCED");
+                        } else {
+                            Serial.println("ERR:NTP_TIMEOUT");
+                        }
+                    } else {
+                        Serial.println("ERR:WIFI_NOT_CONNECTED");
+                    }
+                }
+                else if (input == "INFO") {
+                    Serial.println("--- START_INFO ---");
+                    Serial.println("Serial: " + String(sysStats.serialNumber));
+                    Serial.println("HWID: " + hwID);
+                    Serial.println("Version: " + FIRMWARE_VERSION); 
+                    Serial.printf("Runtime (sec): %u\n", sysStats.deviceRuntimeSec);
+                    Serial.printf("BR1 Cycles: %u\n", sysStats.br1Cycles);
+                    Serial.printf("BR2 Cycles: %u\n", sysStats.br2Cycles);
+                    String ssid = getSSID();
+                    Serial.println("WiFi SSID: " + (ssid == "" || ssid == "null" ? "NOT SET" : ssid));
+                    Serial.println("--- END_INFO ---");
+                }
+            }
+        }
+
+        // Buffer overflow protection
+        if (serialBuffer.length() > 128) {
+            serialBuffer = "";
         }
     }
 }
@@ -273,7 +339,6 @@ void loop() {
     handleWebServer();
     updatePeriodicStats();
     monitorDigitalInputs();
-    
     processMotionLogic();
 
     handleSerialAPI();
@@ -281,13 +346,11 @@ void loop() {
     handleWebSocket();
     handleBluetooth();
 
-    // 1-minute interval update
     if (millis() - lastMinuteMillis >= 15000) {
         lastMinuteMillis = millis();
 
-        // Update value and send BLE notification
         notifyMinutesUpdate();
-        //uploadWebsocketData();
+        notifyTelemetryUpdate();
+        uploadWebsocketData();
     }
-    
 }

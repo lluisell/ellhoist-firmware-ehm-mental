@@ -6,7 +6,6 @@
 #include <SPI.h>
 #include <SD.h>
 #include <WiFi.h>
-#include <RTClib.h>
 
 // --- HARDWARE PIN DEFINITIONS ---
 #define PIN_AN_L1_L2_A   0
@@ -39,7 +38,6 @@
 #define ADDR_EERAM_CTRL  0x18 
 
 // --- EXPORTED HARDWARE OBJECTS ---
-extern RTC_DS3231 rtc;
 extern HardwareSerial RS485_Port0;
 extern HardwareSerial RS485_Port1;
 extern bool mcpPresent;

@@ -176,9 +176,9 @@ void updateAllPowerMeasurements() {
 String getPowerModeString() {
     switch (currentPowerMode) {
         case POWER_MODE_USB_5V: return "USB 5V Rail Power";
-        case POWER_MODE_24V_IDLE: return "24V Present - Idle (Phase Missing)";
-        case POWER_MODE_24V_ACTIVE_FWD: return "24V Active - Phase Normal (L1-L2-L3)";
-        case POWER_MODE_24V_ACTIVE_REV: return "24V Active - Phase Reversed (L3-L2-L1)";
+        case POWER_MODE_24V_IDLE: return "24V Present (Phase Missing)";
+        case POWER_MODE_24V_ACTIVE_FWD: return "Phase Normal (L1-L2-L3)";
+        case POWER_MODE_24V_ACTIVE_REV: return "Phase Reversed (L3-L2-L1)";
         default: return "UNKNOWN";
     }
 }

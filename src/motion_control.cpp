@@ -4,6 +4,7 @@
 #include "positioning.h"
 #include "melodies.h"
 #include "sd_logger.h"
+#include <esp_task_wdt.h>
 
 extern void writeMCP(uint8_t reg, uint8_t value);
 
@@ -64,7 +65,13 @@ void setBrakeTestMode(BrakeTestMode newMode) {
     currentMotion = MOTION_STOP;
     targetActive = false;
     writeMCP(0x09, 0xF0);
-    delay(500);
+    esp_task_wdt_reset();
+    delay(150);
+    esp_task_wdt_reset();
+    delay(150);
+    esp_task_wdt_reset();
+    delay(150);
+    esp_task_wdt_reset();
     currentTestMode = newMode;
     updateMotionOutputs();
 }
@@ -73,6 +80,15 @@ BrakeTestMode getBrakeTestMode() { return currentTestMode; }
 
 bool setMotionState(MotionDirection dir) {
     int32_t currentPos = getCalculatedPosition();
+
+    if (currentPowerMode == POWER_MODE_24V_IDLE) {
+        logEventAsync("MOVEMENT_BLOCKED_NO_3PHASE");
+        return false;
+    }
+    if (currentPowerMode == POWER_MODE_USB_5V) {
+        logEventAsync("MOVEMENT_BLOCKED_OVER_USB");
+        return false;
+    }
 
     if (currentCtrlMode == CTRL_MODE_DIRECT && dir == MOTION_FORWARD) {
         if (currentPowerMode != POWER_MODE_24V_ACTIVE_FWD && currentPowerMode != POWER_MODE_24V_ACTIVE_REV) {

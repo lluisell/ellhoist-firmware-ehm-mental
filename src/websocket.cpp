@@ -58,6 +58,7 @@ void uploadWebsocketData() {
         JsonDocument doc;
         doc["action"] = "WRITE";
         doc["identifierValue"] = sysStats.serialNumber;
+        doc["version"] = 2;
 
         JsonObject payload = doc["payload"].to<JsonObject>();
         payload["hoist_sn"] = sysStats.serialNumber;
