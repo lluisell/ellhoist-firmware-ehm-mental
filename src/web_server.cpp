@@ -323,33 +323,21 @@ static void handleRoot() {
         </div>
 
         <div class="card">
-            <h3>Buzzer Melodies</h3>
-            <label>Startup Melody</label>
-            <select id="sel-startup"></select>
-            
-            <label>Upper Limit Melody</label>
-            <select id="sel-upper"></select>
-            
-            <label>Lower Limit Melody</label>
-            <select id="sel-lower"></select>
-            
-            <div style="margin-top:8px;">
-                <button class="btn btn-fw" onclick="saveMelodies()">SAVE MELODIES</button>
-                <button class="btn btn-test" onclick="previewMelody('startup')">PREVIEW</button>
-            </div>
+            <h3>SD Logs</h3>
+            <div id="sd-list">Loading...</div>
         </div>
 
         <div class="card">
-            <h3>DC Power Telemetry (INA226)</h3>
-            <p>Loop Bus Voltage: <span id="dc-v" class="val">0.00</span> V</p>
-            <p>Loop Current: <span id="dc-i" class="val">0.00</span> mA</p>
-            <p>Loop Power: <span id="dc-p" class="val">0.00</span> W</p>
+            <h3>Current Sensor</h3>
+            <p>Power supply Voltage: <span id="dc-v" class="val">0.00</span> V</p>
+            <p>Loadcell Current (4..20mA): <span id="dc-i" class="val">0.00</span> mA</p>
+            <p>Loadcell Weight: <span id="dc-p" class="val">0.00</span> kg</p>
         </div>
 
         <div class="card">
             <h3>Counters & Runtimes</h3>
-            <p>Device Runtime: <span id="dev-runtime" class="val">0</span> s</p>
-            <p>Motor Runtime: <span id="mot-runtime" class="val">0</span> s</p>
+            <p>Device Runtime: <span id="dev-runtime" class="val">0h 0m 0s</span></p>
+            <p>Motor Runtime: <span id="mot-runtime" class="val">0h 0m 0s</span></p>
             <p>BR1 Cycle Count: <span id="br1-cycles" class="val">0</span></p>
             <p>BR2 Cycle Count: <span id="br2-cycles" class="val">0</span></p>
         </div>
@@ -363,10 +351,6 @@ static void handleRoot() {
             <p id="ota-status" style="margin-top:10px; font-weight:bold;"></p>
         </div>
         <div class="card">
-            <h3>SD Logs</h3>
-            <div id="sd-list">Loading...</div>
-        </div>
-        <div class="card">
             <h3>Live Console Log</h3>
             <pre id="diag-log">Loading...</pre>
         </div>
@@ -374,6 +358,14 @@ static void handleRoot() {
 
     <script>
         let pollInterval = null;
+
+        function formatTime(totalSeconds) {
+            if (!totalSeconds || totalSeconds < 0) return "0h 0m 0s";
+            const h = Math.floor(totalSeconds / 3600);
+            const m = Math.floor((totalSeconds % 3600) / 60);
+            const s = totalSeconds % 60;
+            return h + "h " + m + "m " + s + "s";
+        }
 
         function sendCmd(url) { 
             fetch(url).then(r => r.text()).then(t => console.log(t)); 
@@ -439,8 +431,8 @@ static void handleRoot() {
                 document.getElementById('dc-v').textContent = d.dcV.toFixed(2);
                 document.getElementById('dc-i').textContent = d.dcI.toFixed(2);
                 document.getElementById('dc-p').textContent = d.dcP.toFixed(2);
-                document.getElementById('dev-runtime').textContent = d.devRun;
-                document.getElementById('mot-runtime').textContent = d.motRun;
+                document.getElementById('dev-runtime').textContent = formatTime(d.devRun);
+                document.getElementById('mot-runtime').textContent = formatTime(d.motRun);
                 document.getElementById('br1-cycles').textContent = d.br1C;
                 document.getElementById('br2-cycles').textContent = d.br2C;
                 document.getElementById('enc-raw').textContent = d.encRaw;
@@ -612,6 +604,28 @@ static void handlePreviewMelodyAPI() {
 static void handleSDAPI() { server.send(200, "text/html", getSDFilesListHTML()); }
 static void handleDiagAPI() { server.send(200, "text/plain", diagLogBuffer); }
 
+static void handleDeleteLogAPI() {
+    if (!server.hasArg("file")) {
+        server.send(400, "text/plain", "Error: Missing 'file' parameter");
+        return;
+    }
+
+    String path = server.arg("file");
+    if (!path.startsWith("/")) path = "/" + path;
+
+    if (!SD.exists(path)) {
+        server.send(404, "text/plain", "Error: File Not Found");
+        return;
+    }
+
+    if (SD.remove(path)) {
+        appendDiagLog("[SD] Log file deleted via Web API: " + path + "\n");
+        server.send(200, "text/plain", "OK: File deleted successfully");
+    } else {
+        server.send(500, "text/plain", "Error: Failed to delete file");
+    }
+}
+
 void initWebServer(const char* apSSID, const char* apPassword) {
     diagLogBuffer.reserve(4096);
 
@@ -631,6 +645,7 @@ void initWebServer(const char* apSSID, const char* apPassword) {
 
     server.on("/", handleRoot);
     server.on("/download", handleDownloadFileAPI);
+    server.on("/api/delete_log", handleDeleteLogAPI);
     server.on("/api/telemetry", handleTelemetryAPI);
     server.on("/api/set_position", handleSetPositionAPI);
     server.on("/api/set_scale", handleSetScaleAPI);

@@ -189,7 +189,7 @@ void setup() {
     initWebSocket();
     initBluetooth();
 
-    String fullBtName = "ELLHoist_" + String(sysStats.serialNumber) + "_AP";
+    String fullBtName = "ELLHoist_" + String(sysStats.serialNumber);
     initWebServer(fullBtName.c_str(),"3LLH01s7");
 
     initWatchdog();

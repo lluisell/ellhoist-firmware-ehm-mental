@@ -1,3 +1,9 @@
+
+
+
+
+
+
 #include "sensors.h"
 #include "test_routines.h"
 #include <math.h>
@@ -29,6 +35,13 @@ static float gravityY = 0.0f;
 static float gravityZ = 0.0f;
 static unsigned long lastSampleTimeMs = 0;
 static bool gravityInitialized = false;
+
+// 5-Second Impact Peak Hold
+static float peakX = 0.0f;
+static float peakY = 0.0f;
+static float peakZ = 0.0f;
+static float peakMag = 0.0f;
+static unsigned long peakTimeMs = 0;
 
 bool initAccelerometer() {
     setI2CNormal();
@@ -96,40 +109,26 @@ void readAccelerometer(int16_t &x, int16_t &y, int16_t &z) {
     float fy = (float)accelY;
     float fz = (float)accelZ;
 
-    // Total vector magnitude (1000 LSB = 1.0g in +/-2g High-Res mode)
+    // Total vector magnitude (1000 LSB = 1.0g)
     float currentMag = sqrt(fx * fx + fy * fy + fz * fz);
-
     unsigned long nowMs = millis();
-    float dtSec = (lastSampleTimeMs == 0) ? 0.01f : (float)(nowMs - lastSampleTimeMs) / 1000.0f;
-    lastSampleTimeMs = nowMs;
-    if (dtSec > 1.0f) dtSec = 1.0f;
 
-    // 1. Initialize Gravity Vector on First Read
+    // 1. Initialize Baseline Gravity Vector on First Read
     if (!gravityInitialized) {
         if (currentMag > 100.0f) {
-            gravityX = (fx / currentMag) * 1000.0f;
-            gravityY = (fy / currentMag) * 1000.0f;
-            gravityZ = (fz / currentMag) * 1000.0f;
+            gravityX = fx;
+            gravityY = fy;
+            gravityZ = fz;
             gravityInitialized = true;
         }
     } else {
-        // 2. Gate Update: Only filter baseline if total force is near static rest (0.85g to 1.15g)
-        // Impacts (> 1.15g) and freefalls (< 0.85g) are BLOCKED from corrupting the baseline!
+        // 2. Fast Baseline Tracking when static (0.85g to 1.15g)
+        // Absorbs static tilt/offsets into baseline within 1 second
         if (currentMag >= 850.0f && currentMag <= 1150.0f) {
-            // 1-second Low-Pass Filter constant (tau = 1.0s)
-            float alpha = dtSec / (1.0f + dtSec);
-
+            float alpha = 0.25f; // Fast convergence rate for polled reads
             gravityX = gravityX * (1.0f - alpha) + fx * alpha;
             gravityY = gravityY * (1.0f - alpha) + fy * alpha;
             gravityZ = gravityZ * (1.0f - alpha) + fz * alpha;
-
-            // Re-normalize magnitude strictly to 1.0g (1000 LSB)
-            float gMag = sqrt(gravityX * gravityX + gravityY * gravityY + gravityZ * gravityZ);
-            if (gMag > 100.0f) {
-                gravityX = (gravityX / gMag) * 1000.0f;
-                gravityY = (gravityY / gMag) * 1000.0f;
-                gravityZ = (gravityZ / gMag) * 1000.0f;
-            }
         }
     }
 
@@ -142,18 +141,43 @@ void readAccelerometer(int16_t &x, int16_t &y, int16_t &z) {
     float instX = deltaX * 9.80665f;
     float instY = deltaY * 9.80665f;
     float instZ = deltaZ * 9.80665f;
+    float instMag = sqrt(instX * instX + instY * instY + instZ * instZ);
 
-    // Squelch residual baseline sensor noise (< 50 mm/s²)
-    if (fabs(instX) < 50.0f) instX = 0.0f;
-    if (fabs(instY) < 50.0f) instY = 0.0f;
-    if (fabs(instZ) < 50.0f) instZ = 0.0f;
+    // Squelch residual baseline sensor noise (< 150 mm/s² ~ 0.015g)
+    if (instMag < 150.0f) {
+        instX = 0.0f;
+        instY = 0.0f;
+        instZ = 0.0f;
+        instMag = 0.0f;
+    }
 
-    accelX_mms2 = instX;
-    accelY_mms2 = instY;
-    accelZ_mms2 = instZ;
+    // 4. 5-Second Peak Hold Logic for Impact Display
+    if (instMag > peakMag) {
+        // Capture new peak impact
+        peakMag = instMag;
+        peakX = instX;
+        peakY = instY;
+        peakZ = instZ;
+        peakTimeMs = nowMs;
+    } else if (nowMs - peakTimeMs >= 5000) {
+        // Reset peak hold after 5 seconds of rest
+        peakMag = instMag;
+        peakX = instX;
+        peakY = instY;
+        peakZ = instZ;
+        peakTimeMs = nowMs;
+    }
 
-    // 4. Inclination Angles (Uses raw orientation vector)
-    pitchDeg = (int)round(atan2(fy, sqrt(fx * fx + fz * fz)) * 180.0f / M_PI);
+    accelX_mms2 = peakX;
+    accelY_mms2 = peakY;
+    accelZ_mms2 = peakZ;
+
+    // 5. Inclination Angles (0° when resting flat)
+    //pitchDeg = (int)round(atan2(fx, sqrt(fy * fy + fz * fz)) * 180.0f / M_PI);
+    //tiltDeg  = (int)round(atan2(fy, sqrt(fx * fx + fz * fz)) * 180.0f / M_PI);
+
+    
+    pitchDeg = (int)round(atan2(fx, sqrt(fy * fy + fz * fz)) * 180.0f / M_PI);
     tiltDeg  = (int)round(atan2(fz, sqrt(fx * fx + fy * fy)) * 180.0f / M_PI);
 }
 
@@ -193,3 +217,7 @@ void updateAllSensors() {
     readWeatherSensor(bmeTemperature, bmeHumidity, bmePressure);
     readAccelerometer(accelX, accelY, accelZ);
 }
+
+
+
+ 

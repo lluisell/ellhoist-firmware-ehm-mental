@@ -61,6 +61,13 @@ void updateMotionOutputs() {
 }
 
 void setBrakeTestMode(BrakeTestMode newMode) {
+    if (currentPowerMode == POWER_MODE_24V_IDLE) {
+        logEventAsync("BRAKE_TEST_BLOCKED_NO_3PHASE");
+        return;
+    }
+    if (currentPowerMode == POWER_MODE_USB_5V) {
+        logEventAsync("BRAKE_TEST_SIMULATOR_USB_POWER");
+    }
     if (currentTestMode == newMode) return;
     currentMotion = MOTION_STOP;
     targetActive = false;

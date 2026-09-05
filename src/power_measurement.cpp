@@ -55,10 +55,13 @@ void analyzeACPhases() {
     vL3L2_RMS = sqrt(sumSqL3L2 / NUM_SAMPLES);
     vL1L3_RMS = sqrt((vL1L2_RMS * vL1L2_RMS) + (vL3L2_RMS * vL3L2_RMS) - (vL1L2_RMS * vL3L2_RMS));
 
-    if (vL1L2_RMS < 50.0f || vL3L2_RMS < 50.0f) {
+    if (vL1L2_RMS < 325.0f || vL3L2_RMS < 325.0f) {
         allPhasesPresent = false;
         phaseSequenceStatus = "MISSING_PHASE";
-        phaseFrequencyHz = 0.0f;
+        if (vL1L2_RMS < 50.0f && vL3L2_RMS < 50.0f) {
+            phaseFrequencyHz = 0.0f;
+            return;
+        }
         return;
     }
     allPhasesPresent = true;
@@ -176,7 +179,19 @@ void updateAllPowerMeasurements() {
 String getPowerModeString() {
     switch (currentPowerMode) {
         case POWER_MODE_USB_5V: return "USB 5V Rail Power";
-        case POWER_MODE_24V_IDLE: return "24V Present (Phase Missing)";
+        case POWER_MODE_24V_IDLE: {            
+            if ((vL1L2_RMS > 325.0f) && (vL3L2_RMS < 50.0f))            
+                return "24V Present (Phase L3 Missing)";
+            if ((vL1L2_RMS < 50.0f) && (vL3L2_RMS > 325.0f))            
+                return "24V Present (Phase L1 Missing)";
+            if ((vL1L2_RMS + vL3L2_RMS) < 300.0f)
+                return "24V Present (" + String(1.7320f*(vL1L3_RMS+vL1L2_RMS+vL3L2_RMS)/3.0f, 0) + "V Live & Neutral)";
+            if ((vL1L2_RMS + vL3L2_RMS) < 650.0f)            
+                return "24V Present (Phase L2 Missing)";
+            
+            return "24V Present (Phase Missing)";
+            
+        } 
         case POWER_MODE_24V_ACTIVE_FWD: return "Phase Normal (L1-L2-L3)";
         case POWER_MODE_24V_ACTIVE_REV: return "Phase Reversed (L3-L2-L1)";
         default: return "UNKNOWN";
